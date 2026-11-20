@@ -3,7 +3,8 @@
    Photos are processed in memory only: never written to disk or logged. */
 const { get, run } = require("./db");
 const { HttpError } = require("./core");
-const MODEL = () => process.env.SCAN_MODEL || "gemini-2.5-flash";
+const MODEL = () => process.env.SCAN_MODEL || "gemini-3.5-flash";
+const FALLBACKS = ["gemini-3.5-flash", "gemini-2.5-flash", "gemini-3-flash-preview"];   // tried in order if a model name is not available for your key
 const API = () => (process.env.GEMINI_BASE_URL || "https://generativelanguage.googleapis.com").replace(/\/$/, "");
 const FDC = () => (process.env.FDC_BASE_URL || "https://api.nal.usda.gov").replace(/\/$/, "");
 const DAILY = 20;
@@ -36,22 +37,28 @@ function quota(userId, n) {
   run("INSERT INTO scan_quota(user_id,day,n) VALUES(?,?,?) ON CONFLICT(user_id,day) DO UPDATE SET n=n+?", userId, day, n, n);
 }
 const HAS_KEY = () => !!process.env.GEMINI_API_KEY;   // Google Gemini. The key lives only in the server environment (Railway Variables), never in the code or the browser.
-async function callModel(system, imgs, prompt, maxTokens) {
-  const model = MODEL(), gen = { maxOutputTokens: maxTokens, temperature: 0.2, responseMimeType: "application/json" };
+async function callOnce(model, system, imgs, prompt, maxTokens) {
+  const gen = { maxOutputTokens: maxTokens * 2 + 4000, temperature: 0.2, responseMimeType: "application/json" };   // extra room: some Gemini models spend output tokens on thinking
   if (/2\.5-flash/.test(model)) gen.thinkingConfig = { thinkingBudget: 0 };
-  const r = await fetch(API() + "/v1beta/models/" + encodeURIComponent(model) + ":generateContent", { method: "POST", signal: AbortSignal.timeout(60000), headers: { "x-goog-api-key": process.env.GEMINI_API_KEY, "content-type": "application/json" },
+  const r = await fetch(API() + "/v1beta/models/" + encodeURIComponent(model) + ":generateContent", { method: "POST", signal: AbortSignal.timeout(90000), headers: { "x-goog-api-key": process.env.GEMINI_API_KEY.trim(), "content-type": "application/json" },
     body: JSON.stringify({ systemInstruction: { parts: [{ text: system }] }, contents: [{ role: "user", parts: [...imgs.map((i) => ({ inlineData: { mimeType: i.mime, data: i.data } })), { text: prompt }] }], generationConfig: gen }) });
-  if (!r.ok) { let m = ""; try { m = (await r.text()).slice(0, 300); } catch (e) { /* ignore */ } console.error("[ai] Gemini error", r.status, m); throw new HttpError(502, "provider_error"); }
+  if (!r.ok) { let m = ""; try { const j = await r.json(); m = (j.error && (j.error.message || j.error.status)) || ""; } catch (e) { /* ignore */ } m = String(m).replace(/\s+/g, " ").slice(0, 160);
+    console.error("[ai] Gemini error", r.status, model, m); const e = new HttpError(502, "provider_error: Gemini " + r.status + (m ? " - " + m : "")); e.gemini = r.status; throw e; }
   const j = await r.json(), cand = (j.candidates || [])[0];
-  if (!cand || !cand.content) { console.error("[ai] Gemini returned no content", JSON.stringify(j.promptFeedback || j.candidates || {}).slice(0, 200)); throw new HttpError(502, "analysis_failed"); }
-  return (cand.content.parts || []).map((c) => c.text || "").join("");
+  if (!cand || !cand.content) { const why = JSON.stringify(j.promptFeedback || (cand && cand.finishReason) || {}).slice(0, 120); console.error("[ai] Gemini returned no content", model, why); throw new HttpError(502, "provider_error: Gemini returned no answer " + why); }
+  return (cand.content.parts || []).filter((c) => !c.thought).map((c) => c.text || "").join("");
+}
+async function callModel(system, imgs, prompt, maxTokens) {
+  const models = [...new Set([MODEL(), ...(process.env.SCAN_MODEL ? [] : FALLBACKS)])]; let last;
+  for (const m of models) { try { return await callOnce(m, system, imgs, prompt, maxTokens); } catch (e) { last = e; if (!(e instanceof HttpError) || ![400, 404].includes(e.gemini)) throw e; } }   // only a "model not found / not supported" error moves on to the next model
+  throw last;
 }
 async function vision(system, imgs, prompt, maxTokens) {
   if (!HAS_KEY()) throw new HttpError(503, "not_configured");
   const txt = await callModel(system, imgs, prompt, maxTokens || 1500);
   return JSON.parse(txt.slice(txt.indexOf("{"), txt.lastIndexOf("}") + 1));
 }
-const guard = async (fn) => { try { return await fn(); } catch (e) { if (e instanceof HttpError) throw e; throw new HttpError(502, "analysis_failed"); } };
+const guard = async (fn) => { try { return await fn(); } catch (e) { if (e instanceof HttpError) throw e; console.error("[ai] analysis failed:", e && e.message); throw new HttpError(502, "analysis_failed: " + String((e && e.message) || "").slice(0, 100)); } };
 
 const A = {};
 A["scan-ingredients"] = (u, b) => { const imgs = checkImages(b, 5); if (!HAS_KEY()) throw new HttpError(503, "not_configured"); quota(u.id, imgs.length);

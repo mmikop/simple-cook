@@ -47,7 +47,7 @@ Without a Volume, every redeploy **erases all accounts, messages and uploads**.
 |---|---|---|
 | `NODE_ENV` = `production` | yes | production mode |
 | `GEMINI_API_KEY` | for the camera AI (food scan + ingredient scan) | without it the camera still opens, but analysing says "not switched on for this site yet" |
-| `SCAN_MODEL` | optional | Gemini model for the scanners (default `gemini-2.5-flash`) |
+| `SCAN_MODEL` | optional | Gemini model for the scanners (default `gemini-3.5-flash`, with automatic fallback to other Gemini models) |
 | `FDC_API_KEY` | for nutrition numbers | free key from api.data.gov |
 | `RESEND_API_KEY` (+ `MAIL_FROM`) | for "Forgot password" | without it, the page honestly says reset is not set up |
 | `MAP_STYLE_URL` | recommended before a big launch | e.g. a MapTiler style URL. The default OpenStreetMap tiles are only for light use |

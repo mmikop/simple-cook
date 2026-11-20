@@ -96,7 +96,7 @@
     const v = $("#fs-v", root); if (v && st.stream) v.srcObject = st.stream;
   }
   const backend = () => { const d = SC.dm; return d && d.invoke ? d : null; };
-  const errText = (r, x) => { const s = r.error && r.error.context && r.error.context.status; return s === 429 ? x.quota : s === 503 ? x.noai : s === 401 ? x.login : x.fail; };
+  const errText = (r, x) => { const s = r.error && r.error.context && r.error.context.status, m = (r.error && r.error.message) || ""; return s === 429 ? x.quota : s === 503 ? x.noai : s === 401 ? x.login : /^(provider_error|analysis_failed)/.test(m) ? x.fail + " [" + m.slice(0, 160) + "]" : x.fail; };
   async function addFood() {
     const x = t(), d = backend(), inp = $("#fs-in", root), v = inp ? inp.value.trim() : ""; if (!v) return; st.msg = "";
     if (!d) { st.msg = x.nobk; return draw(); } if (!d.me()) { st.msg = x.login; return draw(); }
